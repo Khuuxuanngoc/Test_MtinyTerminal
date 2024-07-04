@@ -1,7 +1,7 @@
 // Copyright (c) Sandeep Mistry. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-#include "LoRa.h"
+#include "MKL_LoRa.h"
 
 // registers
 #define REG_FIFO                 0x00
@@ -47,7 +47,6 @@
 #define MODE_TX                  0x03
 #define MODE_RX_CONTINUOUS       0x05
 #define MODE_RX_SINGLE           0x06
-#define MODE_CAD                 0x07
 
 // PA config
 #define PA_BOOST                 0x80
@@ -56,8 +55,6 @@
 #define IRQ_TX_DONE_MASK           0x08
 #define IRQ_PAYLOAD_CRC_ERROR_MASK 0x20
 #define IRQ_RX_DONE_MASK           0x40
-#define IRQ_CAD_DONE_MASK          0x04
-#define IRQ_CAD_DETECTED_MASK      0x01
 
 #define RF_MID_BAND_THRESHOLD    525E6
 #define RSSI_OFFSET_HF_PORT      157
@@ -79,7 +76,6 @@ LoRaClass::LoRaClass() :
   _packetIndex(0),
   _implicitHeaderMode(0),
   _onReceive(NULL),
-  _onCadDone(NULL),
   _onTxDone(NULL)
 {
   // overide Stream timeout value
@@ -381,24 +377,6 @@ void LoRaClass::onReceive(void(*callback)(int))
   }
 }
 
-void LoRaClass::onCadDone(void(*callback)(boolean))
-{
-  _onCadDone = callback;
-
-  if (callback) {
-    pinMode(_dio0, INPUT);
-#ifdef SPI_HAS_NOTUSINGINTERRUPT
-    SPI.usingInterrupt(digitalPinToInterrupt(_dio0));
-#endif
-    attachInterrupt(digitalPinToInterrupt(_dio0), LoRaClass::onDio0Rise, RISING);
-  } else {
-    detachInterrupt(digitalPinToInterrupt(_dio0));
-#ifdef SPI_HAS_NOTUSINGINTERRUPT
-    SPI.notUsingInterrupt(digitalPinToInterrupt(_dio0));
-#endif
-  }
-}
-
 void LoRaClass::onTxDone(void(*callback)())
 {
   _onTxDone = callback;
@@ -431,12 +409,6 @@ void LoRaClass::receive(int size)
   }
 
   writeRegister(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_RX_CONTINUOUS);
-}
-
-void LoRaClass::channelActivityDetection(void)
-{
-  writeRegister(REG_DIO_MAPPING_1, 0x80);// DIO0 => CADDONE
-  writeRegister(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_CAD);
 }
 #endif
 
@@ -724,11 +696,7 @@ void LoRaClass::handleDio0Rise()
   // clear IRQ's
   writeRegister(REG_IRQ_FLAGS, irqFlags);
 
-  if ((irqFlags & IRQ_CAD_DONE_MASK) != 0) {
-    if (_onCadDone) {
-      _onCadDone((irqFlags & IRQ_CAD_DETECTED_MASK) != 0);
-    }
-  } else if ((irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) == 0) {
+  if ((irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) == 0) {
 
     if ((irqFlags & IRQ_RX_DONE_MASK) != 0) {
       // received a packet
@@ -743,7 +711,8 @@ void LoRaClass::handleDio0Rise()
       if (_onReceive) {
         _onReceive(packetLength);
       }
-    } else if ((irqFlags & IRQ_TX_DONE_MASK) != 0) {
+    }
+    else if ((irqFlags & IRQ_TX_DONE_MASK) != 0) {
       if (_onTxDone) {
         _onTxDone();
       }
